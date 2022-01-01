@@ -6,31 +6,32 @@ from connection_helper import open_connection
 logger = logging.getLogger(__name__)
 
 
-async def authorise_to_chat(host, port, token, username):
+async def authorise_or_register(host, port, token, username):
+    """Проверка авторизации или регистрация в чате"""
     if all((username, token)):
         logger.error('Необходимо передать в скрипт токен (или имя пользователя) и сообщение.')
         return
 
     async with open_connection(host, port) as (reader, writer):
         # Получаем первое сообщение из чата
-        await _read_message_str(reader)
+        await read_message_str(reader)
 
         # Авторизуемся
         is_authorised = False
         nickname = None
 
         if token:
-            is_authorised, nickname = await _authorise(writer, reader, token)
+            is_authorised, nickname = await authorise(writer, reader, token)
 
         # Регистрируем нового пользователя, если не удалось авторизоваться и передано имя пользователя
         if not is_authorised and username:
             if not token:
                 # Отправляем пустую строку вместо токена
                 await _submit_message(writer, '')
-            nickname = await _register(writer, reader, username)
+            nickname, token = await _register(writer, reader, username)
 
             # Вычитываем строку о вводе нового сообщения
-            await _read_message_str(reader)
+            await read_message_str(reader)
 
             is_authorised = True
 
@@ -40,10 +41,10 @@ async def authorise_to_chat(host, port, token, username):
 
         print(f'Выполнена авторизация. Пользователь {nickname}')
 
-        return is_authorised
+        return is_authorised, token
 
 
-async def _authorise(writer, reader, token):
+async def authorise(writer, reader, token):
     """Функция для авторизации пользователя по токену."""
 
     await _submit_message(writer, token)
@@ -58,7 +59,7 @@ async def _authorise(writer, reader, token):
 async def _register(writer, reader, username):
     """Регистрируем нового пользователя и возвращем токен."""
     # Получаем строку о вводе логина нового пользователя
-    await _read_message_str(reader)
+    await read_message_str(reader)
 
     # Регистрируем нового пользователя
     await _submit_message(writer, username)
@@ -69,7 +70,7 @@ async def _register(writer, reader, username):
     token = received_message.get('account_hash')
     logger.info(f'Ваш новый токен: {token}')
     nickname = received_message.get('nickname')
-    return nickname
+    return nickname, token
 
 
 async def _submit_message(writer, message):
@@ -81,7 +82,7 @@ async def _submit_message(writer, message):
     await writer.drain()
 
 
-async def _read_message_str(reader):
+async def read_message_str(reader):
     """Читаем сообщение из чата и возвращаем строковое представление."""
     data = await reader.readline()
     received_message = data.decode()
@@ -91,5 +92,14 @@ async def _read_message_str(reader):
 
 async def _read_json_message_and_deserialize(reader):
     """Читаем сообщение в json формате и десереализуем."""
-    received_message_str = await _read_message_str(reader)
+    received_message_str = await read_message_str(reader)
     return json.loads(received_message_str)
+
+
+async def submit_message(writer, message):
+    """Отправялем сообщение в чат"""
+    message = message.replace("\n", "\\n")
+    sent_message = f'{message}\n\n'
+    logger.debug(sent_message)
+    writer.write(sent_message.encode())
+    await writer.drain()

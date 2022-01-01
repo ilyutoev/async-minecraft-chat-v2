@@ -8,7 +8,10 @@ from datetime import datetime
 import aiofiles
 
 import gui
-from chat_helpers import authorise_to_chat
+from chat_helpers import authorise
+from chat_helpers import authorise_or_register
+from chat_helpers import read_message_str
+from chat_helpers import submit_message
 from connection_helper import open_connection
 
 
@@ -66,11 +69,19 @@ async def save_msgs(filepath, messages_to_file_queue):
             await f.write(f'[{datetime.now().strftime("%d.%m.%Y %H:%M")}] {msg}')
 
 
-async def send_msgs(host, port, sending_queue):
+async def send_msgs(host, port, sending_queue, token):
     """Вывод введенных сообщений в консоль"""
-    while True:
-        msg = await sending_queue.get()
-        print(msg)
+    async with open_connection(host, port) as (reader, writer):
+        # Получаем первое сообщение из чата
+        await read_message_str(reader)
+
+        # Авторизуемся
+        _, _ = await authorise(writer, reader, token)
+
+        while True:
+            msg = await sending_queue.get()
+            if msg:
+                await submit_message(writer, msg)
 
 
 async def main():
@@ -81,7 +92,7 @@ async def main():
     sending_queue = asyncio.Queue()
     status_updates_queue = asyncio.Queue()
 
-    is_authorised = await authorise_to_chat(args.host, args.register_port, args.token, args.username)
+    is_authorised, token = await authorise_or_register(args.host, args.register_port, args.token, args.username)
     if not is_authorised:
         return
 
@@ -93,7 +104,7 @@ async def main():
         gui.draw(messages_queue, sending_queue, status_updates_queue),
         read_msgs(args.host, args.port, messages_queue, messages_to_file_queue),
         save_msgs(args.history, messages_to_file_queue),
-        send_msgs(args.host, args.port, sending_queue),
+        send_msgs(args.host, args.register_port, sending_queue, token),
     )
 
 
