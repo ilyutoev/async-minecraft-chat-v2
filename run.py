@@ -2,6 +2,9 @@ import argparse
 import asyncio
 import os
 import time
+from datetime import datetime
+
+import aiofiles
 
 import gui
 from connection_helper import open_connection
@@ -20,7 +23,7 @@ def get_arguments():
     return parser.parse_args()
 
 
-async def read_msgs(host, port, messages_queue):
+async def read_msgs(host, port, messages_queue, messages_to_file_queue):
     """Получаем сообщения из чата и пишем в очередь сообщений"""
 
     connect_attempts = 0
@@ -32,6 +35,7 @@ async def read_msgs(host, port, messages_queue):
                     if not data:
                         break
                     messages_queue.put_nowait(data.decode())
+                    messages_to_file_queue.put_nowait(data.decode())
 
         except Exception as e:
             # Непонятно какой ловить эксепшен при орыве соединения, тк отключив сеть локально, скрипт продолжает работать
@@ -39,16 +43,34 @@ async def read_msgs(host, port, messages_queue):
             connect_attempts += 1
 
 
+async def save_msgs(filepath, messages_to_file_queue):
+    """Сохраняем сообщения в файл"""
+
+    async with aiofiles.open(filepath, mode='a') as f:
+        while True:
+            msg = await messages_to_file_queue.get()
+            if not msg:
+                break
+
+            await f.write(f'[{datetime.now().strftime("%d.%m.%Y %H:%M")}] {msg}')
+
+
 async def main():
     args = get_arguments()
 
     messages_queue = asyncio.Queue()
+    messages_to_file_queue = asyncio.Queue()
     sending_queue = asyncio.Queue()
     status_updates_queue = asyncio.Queue()
 
+    async with aiofiles.open(args.history, mode='r') as f:
+        async for line in f:
+            messages_queue.put_nowait(line.strip())
+
     await asyncio.gather(
         gui.draw(messages_queue, sending_queue, status_updates_queue),
-        read_msgs(args.host, args.port, messages_queue)
+        read_msgs(args.host, args.port, messages_queue, messages_to_file_queue),
+        save_msgs(args.history, messages_to_file_queue),
     )
 
 
