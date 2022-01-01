@@ -55,6 +55,13 @@ async def save_msgs(filepath, messages_to_file_queue):
             await f.write(f'[{datetime.now().strftime("%d.%m.%Y %H:%M")}] {msg}')
 
 
+async def send_msgs(host, port, sending_queue):
+    """Вывод введенных сообщений в консоль"""
+    while True:
+        msg = await sending_queue.get()
+        print(msg)
+
+
 async def main():
     args = get_arguments()
 
@@ -71,6 +78,7 @@ async def main():
         gui.draw(messages_queue, sending_queue, status_updates_queue),
         read_msgs(args.host, args.port, messages_queue, messages_to_file_queue),
         save_msgs(args.history, messages_to_file_queue),
+        send_msgs(args.host, args.port, sending_queue),
     )
 
 
