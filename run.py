@@ -18,6 +18,7 @@ from connection_helper import open_connection
 
 
 logger = logging.getLogger(__name__)
+watchdog_logger = logging.getLogger(__name__)
 
 DEFAULT_SERVER_HOST = os.getenv('MINECHAT_SERVER_HOST', 'minechat.dvmn.org')
 DEFAULT_SERVER_PORT = os.getenv('MINECHAT_SERVER_PORT', 5000)
@@ -39,7 +40,7 @@ def get_arguments():
     return parser.parse_args()
 
 
-async def read_msgs(host, port, messages_queue, messages_to_file_queue, status_updates_queue):
+async def read_msgs(host, port, messages_queue, messages_to_file_queue, status_updates_queue, watchdog_queue):
     """Получаем сообщения из чата и пишем в очередь сообщений"""
 
     connect_attempts = 0
@@ -52,6 +53,7 @@ async def read_msgs(host, port, messages_queue, messages_to_file_queue, status_u
                     data = await reader.readline()
                     if not data:
                         break
+                    watchdog_queue.put_nowait('New message in chat')
                     messages_queue.put_nowait(data.decode())
                     messages_to_file_queue.put_nowait(data.decode())
 
@@ -74,7 +76,7 @@ async def save_msgs(filepath, messages_to_file_queue):
             await f.write(f'[{datetime.now().strftime("%d.%m.%Y %H:%M")}] {msg}')
 
 
-async def send_msgs(host, port, sending_queue, status_updates_queue, token):
+async def send_msgs(host, port, token, sending_queue, status_updates_queue, watchdog_queue):
     """Вывод введенных сообщений в консоль"""
     connect_attempts = 0
     while True:
@@ -86,17 +88,26 @@ async def send_msgs(host, port, sending_queue, status_updates_queue, token):
                 await read_message_str(reader)
 
                 # Авторизуемся
+                watchdog_queue.put_nowait('Prompt before auth')
                 _, nickname = await authorise(writer, reader, token)
                 status_updates_queue.put_nowait(gui.NicknameReceived(nickname))
+                watchdog_queue.put_nowait('Authorization done')
 
                 while True:
                     msg = await sending_queue.get()
                     if msg:
                         await submit_message(writer, msg)
+                        watchdog_queue.put_nowait('Message sent')
         except Exception as e:
             status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
             time.sleep(connect_attempts)
             connect_attempts += 1
+
+
+async def watch_for_connection(watchdog_queue):
+    while True:
+        msg = await watchdog_queue.get()
+        watchdog_logger.info(f'[{datetime.now().timestamp()}] Connection is alive. {msg}')
 
 
 async def main():
@@ -106,6 +117,7 @@ async def main():
     messages_to_file_queue = asyncio.Queue()
     sending_queue = asyncio.Queue()
     status_updates_queue = asyncio.Queue()
+    watchdog_queue = asyncio.Queue()
 
     try:
         token = await authorise_or_register(args.host, args.register_port, args.token, args.username)
@@ -127,16 +139,19 @@ async def main():
             args.port,
             messages_queue,
             messages_to_file_queue,
-            status_updates_queue
+            status_updates_queue,
+            watchdog_queue
         ),
         save_msgs(args.history, messages_to_file_queue),
         send_msgs(
             args.host,
             args.register_port,
+            token,
             sending_queue,
             status_updates_queue,
-            token
+            watchdog_queue,
         ),
+        watch_for_connection(watchdog_queue)
     )
 
 
