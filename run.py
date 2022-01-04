@@ -39,13 +39,15 @@ def get_arguments():
     return parser.parse_args()
 
 
-async def read_msgs(host, port, messages_queue, messages_to_file_queue):
+async def read_msgs(host, port, messages_queue, messages_to_file_queue, status_updates_queue):
     """Получаем сообщения из чата и пишем в очередь сообщений"""
 
     connect_attempts = 0
     while True:
         try:
+            status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.INITIATED)
             async with open_connection(host, port) as (reader, writer):
+                status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.ESTABLISHED)
                 while True:
                     data = await reader.readline()
                     if not data:
@@ -54,6 +56,7 @@ async def read_msgs(host, port, messages_queue, messages_to_file_queue):
                     messages_to_file_queue.put_nowait(data.decode())
 
         except Exception as e:
+            status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
             # Непонятно какой ловить эксепшен при орыве соединения, тк отключив сеть локально, скрипт продолжает работать
             time.sleep(connect_attempts)
             connect_attempts += 1
@@ -71,19 +74,29 @@ async def save_msgs(filepath, messages_to_file_queue):
             await f.write(f'[{datetime.now().strftime("%d.%m.%Y %H:%M")}] {msg}')
 
 
-async def send_msgs(host, port, sending_queue, token):
+async def send_msgs(host, port, sending_queue, status_updates_queue, token):
     """Вывод введенных сообщений в консоль"""
-    async with open_connection(host, port) as (reader, writer):
-        # Получаем первое сообщение из чата
-        await read_message_str(reader)
+    connect_attempts = 0
+    while True:
+        try:
+            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.INITIATED)
+            async with open_connection(host, port) as (reader, writer):
+                status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.ESTABLISHED)
+                # Получаем первое сообщение из чата
+                await read_message_str(reader)
 
-        # Авторизуемся
-        _ = await authorise(writer, reader, token)
+                # Авторизуемся
+                _, nickname = await authorise(writer, reader, token)
+                status_updates_queue.put_nowait(gui.NicknameReceived(nickname))
 
-        while True:
-            msg = await sending_queue.get()
-            if msg:
-                await submit_message(writer, msg)
+                while True:
+                    msg = await sending_queue.get()
+                    if msg:
+                        await submit_message(writer, msg)
+        except Exception as e:
+            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
+            time.sleep(connect_attempts)
+            connect_attempts += 1
 
 
 async def main():
@@ -109,9 +122,21 @@ async def main():
 
     await asyncio.gather(
         gui.draw(messages_queue, sending_queue, status_updates_queue),
-        read_msgs(args.host, args.port, messages_queue, messages_to_file_queue),
+        read_msgs(
+            args.host,
+            args.port,
+            messages_queue,
+            messages_to_file_queue,
+            status_updates_queue
+        ),
         save_msgs(args.history, messages_to_file_queue),
-        send_msgs(args.host, args.register_port, sending_queue, token),
+        send_msgs(
+            args.host,
+            args.register_port,
+            sending_queue,
+            status_updates_queue,
+            token
+        ),
     )
 
 
