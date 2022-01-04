@@ -4,10 +4,12 @@ import logging
 import os
 import time
 from datetime import datetime
+from tkinter import messagebox
 
 import aiofiles
 
 import gui
+from chat_helpers import InvalidToken
 from chat_helpers import authorise
 from chat_helpers import authorise_or_register
 from chat_helpers import read_message_str
@@ -76,7 +78,7 @@ async def send_msgs(host, port, sending_queue, token):
         await read_message_str(reader)
 
         # Авторизуемся
-        _, _ = await authorise(writer, reader, token)
+        _ = await authorise(writer, reader, token)
 
         while True:
             msg = await sending_queue.get()
@@ -92,8 +94,13 @@ async def main():
     sending_queue = asyncio.Queue()
     status_updates_queue = asyncio.Queue()
 
-    is_authorised, token = await authorise_or_register(args.host, args.register_port, args.token, args.username)
-    if not is_authorised:
+    try:
+        token = await authorise_or_register(args.host, args.register_port, args.token, args.username)
+    except InvalidToken:
+        messagebox.showinfo(
+            'Неверный токен',
+            'Проверьте токен, сервер его не узнал.'
+        )
         return
 
     async with aiofiles.open(args.history, mode='r') as f:

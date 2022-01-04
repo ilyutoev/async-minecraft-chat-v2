@@ -6,6 +6,10 @@ from connection_helper import open_connection
 logger = logging.getLogger(__name__)
 
 
+class InvalidToken(Exception):
+    pass
+
+
 async def authorise_or_register(host, port, token, username):
     """Проверка авторизации или регистрация в чате"""
     if all((username, token)):
@@ -38,10 +42,11 @@ async def authorise_or_register(host, port, token, username):
         if not is_authorised:
             logger.warning('Для отправки сообщения необходимо авторизоваться: '
                            'передать валидный токен или зарегистрировать нового пользователя.')
+            raise InvalidToken
 
-        print(f'Выполнена авторизация. Пользователь {nickname}')
+        logger.info(f'Выполнена авторизация. Пользователь {nickname}')
 
-        return is_authorised, token
+        return token
 
 
 async def authorise(writer, reader, token):
@@ -50,9 +55,10 @@ async def authorise(writer, reader, token):
     await _submit_message(writer, token)
 
     # Получаем сообщение и проверяем верно ли авторизовались
+    nickname = None
     received_message = await _read_json_message_and_deserialize(reader)
-    nickname = received_message.get('nickname')
-
+    if received_message:
+        nickname = received_message.get('nickname')
     return bool(received_message), nickname
 
 
