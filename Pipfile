@@ -5,6 +5,7 @@ name = "pypi"
 
 [packages]
 aiofiles = "*"
+async-timeout = "*"
 
 [dev-packages]
 

@@ -7,6 +7,7 @@ from datetime import datetime
 from tkinter import messagebox
 
 import aiofiles
+from async_timeout import timeout
 
 import gui
 from chat_helpers import InvalidToken
@@ -106,8 +107,13 @@ async def send_msgs(host, port, token, sending_queue, status_updates_queue, watc
 
 async def watch_for_connection(watchdog_queue):
     while True:
-        msg = await watchdog_queue.get()
-        watchdog_logger.info(f'[{datetime.now().timestamp()}] Connection is alive. {msg}')
+        try:
+            async with timeout(1) as cm:
+                msg = await watchdog_queue.get()
+                watchdog_logger.info(f'[{datetime.now().timestamp()}] Connection is alive. {msg}')
+        except asyncio.TimeoutError:
+            if cm.expired:
+                watchdog_logger.info(f'[{datetime.now().timestamp()}] 1s timeout is elapsed')
 
 
 async def main():
