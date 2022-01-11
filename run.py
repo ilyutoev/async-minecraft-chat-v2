@@ -2,11 +2,11 @@ import argparse
 import asyncio
 import logging
 import os
-import time
 from datetime import datetime
 from tkinter import messagebox
 
 import aiofiles
+from anyio import create_task_group
 from async_timeout import timeout
 
 import gui
@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 watchdog_logger = logging.getLogger(__name__)
 
 DEFAULT_SERVER_HOST = os.getenv('MINECHAT_SERVER_HOST', 'minechat.dvmn.org')
-DEFAULT_SERVER_PORT = os.getenv('MINECHAT_SERVER_PORT', 5000)
-DEFAULT_REGISTER_SERVER_PORT = os.getenv('MINECHAT_SERVER_PORT', 5050)
+DEFAULT_READ_SERVER_PORT = os.getenv('DEFAULT_READ_SERVER_PORT', 5000)
+DEFAULT_WRITE_SERVER_PORT = os.getenv('DEFAULT_WRITE_SERVER_PORT', 5050)
 DEFAULT_FILE_PATH = os.getenv('MINECHAT_FILE_PATH', 'minechat.history')
 DEFAULT_TOKEN = os.getenv('MINECHAT_TOKEN')
 DEFAULT_USERNAME = os.getenv('MINECHAT_USERNAME')
@@ -33,36 +33,24 @@ def get_arguments():
     """Получаем аргументы командной строки, переданные скрипту."""
     parser = argparse.ArgumentParser(description='Script save minechat messages to file.')
     parser.add_argument('--host', type=str, default=DEFAULT_SERVER_HOST, help='Minechat server host.')
-    parser.add_argument('--port', type=int, default=DEFAULT_SERVER_PORT, help='Minechat server port.')
-    parser.add_argument('--register-port', type=int, default=DEFAULT_REGISTER_SERVER_PORT, help='Minechat register server port.')
+    parser.add_argument('--read-port', type=int, default=DEFAULT_READ_SERVER_PORT, help='Minechat server port.')
+    parser.add_argument('--write-port', type=int, default=DEFAULT_WRITE_SERVER_PORT, help='Minechat register server port.')
     parser.add_argument('--history', type=str, default=DEFAULT_FILE_PATH, help="Path to save minechat history.")
     parser.add_argument('--token', type=str, default=DEFAULT_TOKEN, help="User token.")
     parser.add_argument('--username', type=str, default=DEFAULT_USERNAME, help="Username for registration.")
     return parser.parse_args()
 
 
-async def read_msgs(host, port, messages_queue, messages_to_file_queue, status_updates_queue, watchdog_queue):
+async def read_msgs(reader, messages_queue, messages_to_file_queue, watchdog_queue):
     """Получаем сообщения из чата и пишем в очередь сообщений"""
 
-    connect_attempts = 0
     while True:
-        try:
-            status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.INITIATED)
-            async with open_connection(host, port) as (reader, writer):
-                status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.ESTABLISHED)
-                while True:
-                    data = await reader.readline()
-                    if not data:
-                        break
-                    watchdog_queue.put_nowait('New message in chat')
-                    messages_queue.put_nowait(data.decode())
-                    messages_to_file_queue.put_nowait(data.decode())
-
-        except Exception as e:
-            status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
-            # Непонятно какой ловить эксепшен при орыве соединения, тк отключив сеть локально, скрипт продолжает работать
-            time.sleep(connect_attempts)
-            connect_attempts += 1
+        data = await reader.readline()
+        if not data:
+            break
+        watchdog_queue.put_nowait('New message in chat')
+        messages_queue.put_nowait(data.decode())
+        messages_to_file_queue.put_nowait(data.decode())
 
 
 async def save_msgs(filepath, messages_to_file_queue):
@@ -77,32 +65,13 @@ async def save_msgs(filepath, messages_to_file_queue):
             await f.write(f'[{datetime.now().strftime("%d.%m.%Y %H:%M")}] {msg}')
 
 
-async def send_msgs(host, port, token, sending_queue, status_updates_queue, watchdog_queue):
+async def send_msgs(writer, sending_queue, watchdog_queue):
     """Вывод введенных сообщений в консоль"""
-    connect_attempts = 0
     while True:
-        try:
-            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.INITIATED)
-            async with open_connection(host, port) as (reader, writer):
-                status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.ESTABLISHED)
-                # Получаем первое сообщение из чата
-                await read_message_str(reader)
-
-                # Авторизуемся
-                watchdog_queue.put_nowait('Prompt before auth')
-                _, nickname = await authorise(writer, reader, token)
-                status_updates_queue.put_nowait(gui.NicknameReceived(nickname))
-                watchdog_queue.put_nowait('Authorization done')
-
-                while True:
-                    msg = await sending_queue.get()
-                    if msg:
-                        await submit_message(writer, msg)
-                        watchdog_queue.put_nowait('Message sent')
-        except Exception as e:
-            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
-            time.sleep(connect_attempts)
-            connect_attempts += 1
+        msg = await sending_queue.get()
+        if msg:
+            await submit_message(writer, msg)
+            watchdog_queue.put_nowait('Message sent')
 
 
 async def watch_for_connection(watchdog_queue):
@@ -112,8 +81,54 @@ async def watch_for_connection(watchdog_queue):
                 msg = await watchdog_queue.get()
                 watchdog_logger.info(f'[{datetime.now().timestamp()}] Connection is alive. {msg}')
         except asyncio.TimeoutError:
-            if cm.expired:
-                watchdog_logger.info(f'[{datetime.now().timestamp()}] 1s timeout is elapsed')
+            watchdog_logger.info(f'[{datetime.now().timestamp()}] 1s timeout is elapsed')
+            raise ConnectionError()
+
+
+async def handle_connection(
+    host, read_port, write_port, token,
+    messages_queue, messages_to_file_queue, sending_queue, status_updates_queue, watchdog_queue
+):
+    while True:
+        try:
+            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.INITIATED)
+            status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.INITIATED)
+
+            async with open_connection(host, read_port) as (read_reader, read_writer), \
+                       open_connection(host, write_port) as (write_reader, write_writer):
+
+                status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.ESTABLISHED)
+                status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.ESTABLISHED)
+
+                # Получаем первое сообщение из чата
+                await read_message_str(write_reader)
+
+                # Авторизуемся
+                watchdog_queue.put_nowait('Prompt before auth')
+                _, nickname = await authorise(write_writer, write_reader, token)
+                status_updates_queue.put_nowait(gui.NicknameReceived(nickname))
+                watchdog_queue.put_nowait('Authorization done')
+
+                async with create_task_group() as tg:
+                    tg.start_soon(
+                        read_msgs,
+                        read_reader, messages_queue, messages_to_file_queue, watchdog_queue
+                    )
+                    tg.start_soon(
+                        send_msgs,
+                        write_writer, sending_queue, watchdog_queue
+                    )
+
+                    tg.start_soon(
+                        watch_for_connection,
+                        watchdog_queue
+                    )
+
+        except ConnectionError:
+            status_updates_queue.put_nowait(gui.ReadConnectionStateChanged.CLOSED)
+            status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
+        else:
+            break
 
 
 async def main():
@@ -126,7 +141,7 @@ async def main():
     watchdog_queue = asyncio.Queue()
 
     try:
-        token = await authorise_or_register(args.host, args.register_port, args.token, args.username)
+        token = await authorise_or_register(args.host, args.write_port, args.token, args.username)
     except InvalidToken:
         messagebox.showinfo(
             'Неверный токен',
@@ -138,27 +153,21 @@ async def main():
         async for line in f:
             messages_queue.put_nowait(line.strip())
 
-    await asyncio.gather(
-        gui.draw(messages_queue, sending_queue, status_updates_queue),
-        read_msgs(
-            args.host,
-            args.port,
-            messages_queue,
-            messages_to_file_queue,
-            status_updates_queue,
-            watchdog_queue
-        ),
-        save_msgs(args.history, messages_to_file_queue),
-        send_msgs(
-            args.host,
-            args.register_port,
-            token,
-            sending_queue,
-            status_updates_queue,
-            watchdog_queue,
-        ),
-        watch_for_connection(watchdog_queue)
-    )
+    async with create_task_group() as tg:
+        tg.start_soon(
+            gui.draw,
+            messages_queue, sending_queue, status_updates_queue
+        )
+        tg.start_soon(
+            handle_connection,
+            args.host, args.read_port, args.write_port, token,
+            messages_queue, messages_to_file_queue, sending_queue, status_updates_queue, watchdog_queue
+
+        )
+        tg.start_soon(
+            save_msgs,
+            args.history, messages_to_file_queue
+        )
 
 
 if __name__ == '__main__':
