@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import logging
 import os
+import socket
 from datetime import datetime
 from tkinter import messagebox
 
@@ -29,6 +30,11 @@ DEFAULT_TOKEN = os.getenv('MINECHAT_TOKEN')
 DEFAULT_USERNAME = os.getenv('MINECHAT_USERNAME')
 
 
+PING_PONG_TIMEOUT = 5
+PING_PONG_SLEEP = 10
+WATCH_TIMEOUT = 5
+
+
 def get_arguments():
     """Получаем аргументы командной строки, переданные скрипту."""
     parser = argparse.ArgumentParser(description='Script save minechat messages to file.')
@@ -39,6 +45,24 @@ def get_arguments():
     parser.add_argument('--token', type=str, default=DEFAULT_TOKEN, help="User token.")
     parser.add_argument('--username', type=str, default=DEFAULT_USERNAME, help="Username for registration.")
     return parser.parse_args()
+
+
+async def ping_pong(writer, watchdog_queue):
+    """Отправка пустых сообщений для поддержания коннекта"""
+    while True:
+        try:
+            async with timeout(PING_PONG_TIMEOUT):
+                await submit_message(writer, '')
+
+            await asyncio.sleep(PING_PONG_SLEEP)
+            watchdog_queue.put_nowait('Ping message sent')
+
+        except socket.gaierror:
+            watchdog_logger.info(f'[{datetime.now().timestamp()}] No internet connection')
+            raise ConnectionError()
+        except asyncio.TimeoutError:
+            watchdog_logger.info(f'[{datetime.now().timestamp()}] {PING_PONG_TIMEOUT}s timeout is elapsed')
+            raise ConnectionError()
 
 
 async def read_msgs(reader, messages_queue, messages_to_file_queue, watchdog_queue):
@@ -77,11 +101,11 @@ async def send_msgs(writer, sending_queue, watchdog_queue):
 async def watch_for_connection(watchdog_queue):
     while True:
         try:
-            async with timeout(1) as cm:
+            async with timeout(WATCH_TIMEOUT) as cm:
                 msg = await watchdog_queue.get()
                 watchdog_logger.info(f'[{datetime.now().timestamp()}] Connection is alive. {msg}')
         except asyncio.TimeoutError:
-            watchdog_logger.info(f'[{datetime.now().timestamp()}] 1s timeout is elapsed')
+            watchdog_logger.info(f'[{datetime.now().timestamp()}] {WATCH_TIMEOUT}s timeout is elapsed')
             raise ConnectionError()
 
 
@@ -118,10 +142,13 @@ async def handle_connection(
                         send_msgs,
                         write_writer, sending_queue, watchdog_queue
                     )
-
                     tg.start_soon(
                         watch_for_connection,
                         watchdog_queue
+                    )
+                    tg.start_soon(
+                        ping_pong,
+                        write_writer, watchdog_queue
                     )
 
         except ConnectionError:
