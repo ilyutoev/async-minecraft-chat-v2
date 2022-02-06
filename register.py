@@ -25,9 +25,11 @@ def register(root_frame, input_field):
 
             # Получаем токен
             token = json.loads(data.decode().split('\n')[0])['account_hash']
-            message = f"Ваш токен: {token}"
-    except:
-        message = 'Ошибка при регистрации, повторите позже.'
+            with open('token.txt', 'w') as f:
+                f.write(token)
+            message = f"Ваш токен сохранен в файл token.txt"
+    except Exception as e:
+        message = f'Ошибка при регистрации, повторите позже.\n Текст ошибки: {e}'
 
     mb.showinfo(
         title="Токен",

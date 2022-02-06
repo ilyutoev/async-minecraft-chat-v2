@@ -1,52 +1,7 @@
 import json
 import logging
 
-from connection_helper import open_connection
-
 logger = logging.getLogger(__name__)
-
-
-class InvalidToken(Exception):
-    pass
-
-
-async def authorise_or_register(host, port, token, username):
-    """Проверка авторизации или регистрация в чате"""
-    if all((username, token)):
-        logger.error('Необходимо передать в скрипт токен (или имя пользователя) и сообщение.')
-        return
-
-    async with open_connection(host, port) as (reader, writer):
-        # Получаем первое сообщение из чата
-        await read_message_str(reader)
-
-        # Авторизуемся
-        is_authorised = False
-        nickname = None
-
-        if token:
-            is_authorised, nickname = await authorise(writer, reader, token)
-
-        # Регистрируем нового пользователя, если не удалось авторизоваться и передано имя пользователя
-        if not is_authorised and username:
-            if not token:
-                # Отправляем пустую строку вместо токена
-                await _submit_message(writer, '')
-            nickname, token = await _register(writer, reader, username)
-
-            # Вычитываем строку о вводе нового сообщения
-            await read_message_str(reader)
-
-            is_authorised = True
-
-        if not is_authorised:
-            logger.warning('Для отправки сообщения необходимо авторизоваться: '
-                           'передать валидный токен или зарегистрировать нового пользователя.')
-            raise InvalidToken
-
-        logger.info(f'Выполнена авторизация. Пользователь {nickname}')
-
-        return token
 
 
 async def authorise(writer, reader, token):

@@ -11,9 +11,7 @@ from anyio import create_task_group
 from async_timeout import timeout
 
 import gui
-from chat_helpers import InvalidToken
 from chat_helpers import authorise
-from chat_helpers import authorise_or_register
 from chat_helpers import read_message_str
 from chat_helpers import submit_message
 from connection_helper import open_connection
@@ -45,6 +43,17 @@ def get_arguments():
     parser.add_argument('--token', type=str, default=DEFAULT_TOKEN, help="User token.")
     parser.add_argument('--username', type=str, default=DEFAULT_USERNAME, help="Username for registration.")
     return parser.parse_args()
+
+
+async def get_token_from_file():
+    """Получаем токен из файла token.txt"""
+    file_name = 'token.txt'
+    if not os.path.exists(file_name):
+        return None, f'Файла {file_name} с токеном не существует. Создайте токен в программе регистрации'
+
+    async with aiofiles.open('token.txt', mode='r') as f:
+        token = await f.readline()
+    return token.strip(), None
 
 
 async def ping_pong(writer, watchdog_queue):
@@ -113,6 +122,17 @@ async def handle_connection(
     host, read_port, write_port, token,
     messages_queue, messages_to_file_queue, sending_queue, status_updates_queue, watchdog_queue
 ):
+    if not token:
+        token, error = await get_token_from_file()
+        if error:
+            messagebox.showinfo(message=error)
+            return
+    if not token:
+        messagebox.showinfo(
+            message='Для работы необходим токен пользователя. Воспользуйтесь программой регистрации.'
+        )
+        return
+
     while True:
         try:
             status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.INITIATED)
@@ -129,7 +149,11 @@ async def handle_connection(
 
                 # Авторизуемся
                 watchdog_queue.put_nowait('Prompt before auth')
-                _, nickname = await authorise(write_writer, write_reader, token)
+                is_authorize, nickname = await authorise(write_writer, write_reader, token)
+                if not is_authorize:
+                    messagebox.showinfo(message='Предоставленный токен неверен')
+                    return
+
                 status_updates_queue.put_nowait(gui.NicknameReceived(nickname))
                 watchdog_queue.put_nowait('Authorization done')
 
@@ -167,15 +191,6 @@ async def main():
     status_updates_queue = asyncio.Queue()
     watchdog_queue = asyncio.Queue()
 
-    try:
-        token = await authorise_or_register(args.host, args.write_port, args.token, args.username)
-    except InvalidToken:
-        messagebox.showinfo(
-            'Неверный токен',
-            'Проверьте токен, сервер его не узнал.'
-        )
-        return
-
     async with aiofiles.open(args.history, mode='r') as f:
         async for line in f:
             messages_queue.put_nowait(line.strip())
@@ -187,7 +202,7 @@ async def main():
         )
         tg.start_soon(
             handle_connection,
-            args.host, args.read_port, args.write_port, token,
+            args.host, args.read_port, args.write_port, args.token,
             messages_queue, messages_to_file_queue, sending_queue, status_updates_queue, watchdog_queue
 
         )
