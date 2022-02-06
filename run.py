@@ -21,11 +21,10 @@ logger = logging.getLogger(__name__)
 watchdog_logger = logging.getLogger(__name__)
 
 DEFAULT_SERVER_HOST = os.getenv('MINECHAT_SERVER_HOST', 'minechat.dvmn.org')
-DEFAULT_READ_SERVER_PORT = os.getenv('DEFAULT_READ_SERVER_PORT', 5000)
-DEFAULT_WRITE_SERVER_PORT = os.getenv('DEFAULT_WRITE_SERVER_PORT', 5050)
+DEFAULT_READ_SERVER_PORT = os.getenv('READ_SERVER_PORT', 5000)
+DEFAULT_WRITE_SERVER_PORT = os.getenv('WRITE_SERVER_PORT', 5050)
 DEFAULT_FILE_PATH = os.getenv('MINECHAT_FILE_PATH', 'minechat.history')
 DEFAULT_TOKEN = os.getenv('MINECHAT_TOKEN')
-DEFAULT_USERNAME = os.getenv('MINECHAT_USERNAME')
 
 
 PING_PONG_TIMEOUT = 5
@@ -41,7 +40,6 @@ def get_arguments():
     parser.add_argument('--write-port', type=int, default=DEFAULT_WRITE_SERVER_PORT, help='Minechat register server port.')
     parser.add_argument('--history', type=str, default=DEFAULT_FILE_PATH, help="Path to save minechat history.")
     parser.add_argument('--token', type=str, default=DEFAULT_TOKEN, help="User token.")
-    parser.add_argument('--username', type=str, default=DEFAULT_USERNAME, help="Username for registration.")
     return parser.parse_args()
 
 

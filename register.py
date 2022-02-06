@@ -6,7 +6,7 @@ from tkinter import messagebox as mb
 
 
 DEFAULT_SERVER_HOST = os.getenv('MINECHAT_SERVER_HOST', 'minechat.dvmn.org')
-DEFAULT_WRITE_SERVER_PORT = os.getenv('DEFAULT_WRITE_SERVER_PORT', 5050)
+DEFAULT_WRITE_SERVER_PORT = os.getenv('MINECHAT_SERVER_PORT', 5050)
 
 
 def register(root_frame, input_field):
